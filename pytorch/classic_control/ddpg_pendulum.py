@@ -54,21 +54,34 @@ def get_screen(env):
     view = transform(view).unsqueeze(0) # NCHW
     return view
 
+def lr_schedule(actor_opt, critic_opt):
+    curr_lr_a = actor_opt.param_groups[0]['lr']
+    curr_lr_c = critic_opt.param_groups[0]['lr']
+
+    decay_lr_a = curr_lr_a*0.3
+    decay_lr_c = curr_lr_c*0.3
+
+    for pg in actor_opt.param_groups:
+        pg['lr'] = decay_lr_a
+    for pg in critic_opt.param_groups:
+        pg['lr'] = decay_lr_c
+
+    print 'learning rate schedule: lr_a: %f, lr_c: %f'%(decay_lr_a, decay_lr_c)
 
 # Basic classes
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Actor, self).__init__()
         self.conv1 = nn.Conv2d(state_dim[0], 32, kernel_size=3, stride=2)
-        self.bn1 = nn.BatchNorm2d(32)
+        # self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 32, kernel_size=3, stride=2)
-        self.bn2 = nn.BatchNorm2d(32)
+        # self.bn2 = nn.BatchNorm2d(32)
         self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=2)
-        self.bn3 = nn.BatchNorm2d(32)
+        # self.bn3 = nn.BatchNorm2d(32)
         self.fc1 = nn.Linear(1568, 200)
-        self.bn4 = nn.BatchNorm1d(200)
+        # self.bn4 = nn.BatchNorm1d(200)
         self.fc2 = nn.Linear(200, 200)
-        self.bn5 = nn.BatchNorm1d(200)
+        # self.bn5 = nn.BatchNorm1d(200)
         self.fc3 = nn.Linear(200, action_dim)
         self.init_weights()
 
@@ -81,11 +94,11 @@ class Actor(nn.Module):
         self.fc3.weight.data.uniform_(-small_init, small_init)
 
     def forward(self, s):
-        x = F.relu(self.bn1(self.conv1(s)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = F.relu(self.bn4(self.fc1(x.view(x.size(0), -1))))
-        x = F.relu(self.bn5(self.fc2(x)))
+        x = F.relu(self.conv1(s))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.fc1(x.view(x.size(0), -1)))
+        x = F.relu(self.fc2(x))
         x = F.tanh(self.fc3(x))
         return x
 
@@ -93,17 +106,17 @@ class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Critic, self).__init__()
         self.conv1 = nn.Conv2d(state_dim[0], 32, kernel_size=3, stride=2)
-        self.bn1 = nn.BatchNorm2d(32)
+        # self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 32, kernel_size=3, stride=2)
-        self.bn2 = nn.BatchNorm2d(32)
+        # self.bn2 = nn.BatchNorm2d(32)
         self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=2)
-        self.bn3 = nn.BatchNorm2d(32)
+        # self.bn3 = nn.BatchNorm2d(32)
         self.fc1 = nn.Linear(1568, 200)
-        self.bn4 = nn.BatchNorm1d(200)
+        # self.bn4 = nn.BatchNorm1d(200)
         self.fc2 = nn.Linear(200, 200)
-        self.bn5 = nn.BatchNorm1d(200)
+        # self.bn5 = nn.BatchNorm1d(200)
         self.fc3 = nn.Linear(action_dim, 50)
-        self.bn6 = nn.BatchNorm1d(50)
+        # self.bn6 = nn.BatchNorm1d(50)
         self.fc4 = nn.Linear(250, 1)
         self.init_weights()
 
@@ -117,12 +130,12 @@ class Critic(nn.Module):
         self.fc4.weight.data.uniform_(-small_init, small_init)
 
     def forward(self, s, a):
-        x = F.relu(self.bn1(self.conv1(s)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = F.relu(self.bn4(self.fc1(x.view(x.size(0), -1))))
-        x1 = F.relu(self.bn5(self.fc2(x)))
-        x2 = F.relu(self.bn6(self.fc3(a)))
+        x = F.relu(self.conv1(s))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.fc1(x.view(x.size(0), -1)))
+        x1 = F.relu(self.fc2(x))
+        x2 = F.relu(self.fc3(a))
         x = torch.cat([x1, x2], dim=1)
         x = self.fc4(x)
         return x
@@ -130,7 +143,7 @@ class Critic(nn.Module):
 class Agent(object):
     def __init__(self, state_dim, action_dim,
                  tau=0.001, discount=0.99,
-                 lr_a=1e-4, lr_c=1e-3):
+                 lr_a=1e-4, lr_c=5e-4):
         self.discount = discount
         self.tau = tau
 
@@ -153,9 +166,10 @@ class Agent(object):
             self.target_critic.cuda()
 
     def predict(self, s, epsilon=0.0):
-        a = to_numpy(self.actor.forward(Variable(s).type(FLOAT))).squeeze(1)
-        a += OU_noise(a, 0.0, epsilon)
+        a_ = to_numpy(self.actor.forward(Variable(s).type(FLOAT))).squeeze(1)
+        a = a_ + OU_noise(a_, 0.0, epsilon)
         a = np.clip(a, -1., 1.)
+        print 'a: %f, noisy a: %f'%(a_, a)
         return a
 
     def train(self, batch):
@@ -169,6 +183,8 @@ class Agent(object):
         q = self.critic.forward(Variable(s).type(FLOAT), to_tensor(a))
         c_loss = MSELoss_fn(q, y)
         c_loss.backward()
+        # for p in self.critic.parameters():
+        #     p.grad.data.clamp(-1, 1)
         self.critic_optimizer.step()
 
         self.actor.zero_grad()
@@ -177,6 +193,7 @@ class Agent(object):
         a_loss = a_loss.mean()
         a_loss.backward()
         self.actor_optimizer.step()
+        return to_numpy(c_loss), to_numpy(a_loss)
 
     def train_target(self):
         for t, s in zip(self.target_actor.parameters(), self.actor.parameters()):
@@ -249,16 +266,20 @@ num_steps = 20*scale
 epsilon = 1.0
 epsilon_end = 0.1
 epsilon_endt = 13*scale
-warmup = 20
+warmup = 1000
 batch_sz = 16
 image_stack = action_repeat = 3
 image_holder = deque(maxlen=image_stack)
 reward_holder = []
 episode_reward = 0
+ep_closs = ep_aloss = 0
 s = None
 rewards = []
+c_loss = []
+a_loss = []
 path = 'outputs/'
 plt.ion()
+
 
 print 'Start of training...'
 print '-'*20
@@ -286,8 +307,10 @@ while step < num_steps:
     memory.add(s, a, r, s2, term)
     if step > warmup:
         batch = memory.get_minibatch(batch_sz)
-        agent.train(batch)
+        cl, al = agent.train(batch)
         agent.train_target()
+        ep_closs += cl
+        ep_aloss += al
 
     step += 1
     episode_step += 1
@@ -297,19 +320,31 @@ while step < num_steps:
     if term:
         print '# %3d: ep_r: %.3f, epsilon: %.4f, steps: %5d' % (episode + 1, episode_reward, eps, step)
         rewards.append(episode_reward)
+        if ep_aloss != 0:
+            c_loss.append(ep_closs)
+            a_loss.append(ep_aloss)
+            ep_closs = ep_aloss = 0
         s = None
         episode_reward = 0
         episode_step = 0
         episode += 1
         image_holder.clear()
+        if step > warmup and episode % 15 == 0:
+            lr_schedule(agent.actor_optimizer,
+                        agent.critic_optimizer)
 
         if episode % 10 == 9:
             if not os.path.exists(path):
                 os.makedirs(path)
             agent.save(path)
 
-        plt.cla()
-        plt.plot(np.arange(len(rewards)), np.array(rewards), lw=1.5)
+        plt.clf()
+        plt.subplot(221)
+        plt.plot(np.arange(len(rewards)), np.array(rewards))
+        plt.subplot(223)
+        plt.plot(np.arange(len(c_loss)), np.array(c_loss))
+        plt.subplot(224)
+        plt.plot(np.arange(len(a_loss)), np.array(a_loss))
         plt.pause(0.1)
 
 plt.ioff()
